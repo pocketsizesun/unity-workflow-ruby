@@ -7,30 +7,43 @@ module Unity
       LOCK_KEY_FORMAT = '%s/l/%s'
       VALUE_KEY_FORMAT = '%s/v/%s'
 
-      # @param aws_dynamodb_client [Aws::DynamoDB::Client]
+      # @param namespace [String] Key namespace
+      # @param table_name [String] Table name to store locks and values
+      # @param aws_dynamodb_client [Aws::DynamoDB::Client] DynamoDB client to use
+      # @param worker_id [String] Set worker ID (optional)
+      # @param lock_default_ttl [String] Set default lock TTL (default: 60)
+      # @param value_default_ttl [String] Set default value TTL (default: 60)
+      # @param consistent_reads [Boolean] Use DynamoDB consistent reads mode (default: true)
       def initialize(namespace, table_name, **kwargs)
         @namespace = namespace
         @table_name = table_name
         @worker_id = kwargs[:worker_id] || SecureRandom.uuid
         @aws_dynamodb_client = kwargs[:aws_dynamodb_client] || Aws::DynamoDB::Client.new
         @lock_default_ttl = kwargs[:lock_default_ttl] || 60
+        @value_default_ttl = kwargs[:value_default_ttl] || 60
         @consistent_reads = kwargs[:consistent_reads] || true
       end
 
+      # @param key [String]
+      # @param value [Object]
+      # @param ttl [Integer, nil]
+      # @return [Boolean]
       def store(key, value, ttl: nil)
         @aws_dynamodb_client.put_item(
           table_name: @table_name,
           item: {
             'k' => format(VALUE_KEY_FORMAT, @namespace, key),
             'v' => value,
-            'e' => Process.clock_gettime(Process::CLOCK_REALTIME, :second) + (ttl || @lock_default_ttl)
+            'e' => Process.clock_gettime(Process::CLOCK_REALTIME, :second) + (ttl || @value_default_ttl)
           }
         )
 
         true
       end
 
-      def fetch(key, ignore_ttl: false)
+      # @param key [String]
+      # @return [Object, nil]
+      def fetch(key, default_value = nil)
         get_item_parameters = {
           table_name: @table_name,
           projection_expression: 'v, e',
@@ -38,16 +51,15 @@ module Unity
           consistent_read: @consistent_reads
         }
         result = @aws_dynamodb_client.get_item(get_item_parameters)
-        return nil if result.item.nil?
+        return default_value if result.item.nil?
 
-        if ignore_ttl == false &&
-           result.item['e'].to_i <= Process.clock_gettime(Process::CLOCK_REALTIME, :second)
-          return nil
+        if result.item['e'].to_i <= Process.clock_gettime(Process::CLOCK_REALTIME, :second)
+          return default_value
         end
 
         result.item['v']
       rescue Aws::DynamoDB::Errors::ConditionalCheckFailedException
-        return nil
+        return default_value
       end
 
       # @param key [String]
@@ -83,6 +95,8 @@ module Unity
 
       # @param key [String]
       # @param ttl [Integer, nil]
+      # @raise [Unity::Workflow::Errors::LockResourceError]
+      # @return [Unity::Workflow::LockResource]
       def lock(key, ttl: nil)
         current_time = Process.clock_gettime(Process::CLOCK_REALTIME, :second)
         lock_id = SecureRandom.uuid
@@ -105,6 +119,9 @@ module Unity
         raise Unity::Workflow::Errors::LockResourceError.new(key)
       end
 
+      # @param lock_resource [Unity::Workflow::LockResource]
+      # @raise [Unity::Workflow::Errors::LockResourceExtendError]
+      # @return [Boolean]
       def extend_lock(lock_resource)
         @aws_dynamodb_client.update_item(
           table_name: @table_name,
@@ -117,10 +134,14 @@ module Unity
           condition_expression: 'w = :w AND lid = :lid',
           update_expression: 'SET e = :e'
         )
+
+        true
       rescue Aws::DynamoDB::Errors::ConditionalCheckFailedException
         raise Unity::Workflow::Errors::LockResourceExtendError.new(lock_resource)
       end
 
+      # @param lock_resource [Unity::Workflow::LockResource]
+      # @return [Boolean]
       def release(lock_resource)
         @aws_dynamodb_client.delete_item(
           table_name: @table_name,
@@ -131,7 +152,7 @@ module Unity
 
         true
       rescue Aws::DynamoDB::Errors::ConditionalCheckFailedException
-        true
+        false
       end
     end
   end
