@@ -64,6 +64,15 @@ module Unity
 
       # @param key [String]
       # @param ttl [Integer, nil]
+      # @param sleep_time [Integer, Float]
+      # @yieldparam [Unity::Workflow::LockResource]
+      # @return [Object]
+      def wait_and_lock(key, ttl: nil, sleep_time: 1, &block)
+        with_lock(key, ttl: ttl, tries: nil, sleep_time: sleep_time, &block)
+      end
+
+      # @param key [String]
+      # @param ttl [Integer, nil]
       # @param tries [Integer, nil]
       # @param sleep_time [Integer, Float]
       # @yieldparam [Unity::Workflow::LockResource]
