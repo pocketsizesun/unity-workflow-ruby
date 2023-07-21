@@ -103,7 +103,7 @@ module Unity
 
         @aws_dynamodb_client.update_item(
           table_name: @table_name,
-          key: { 'k' => format(LOCK_KEY_FORMAT, @namespace, lock_resource.key) },
+          key: { 'k' => format(LOCK_KEY_FORMAT, @namespace, key) },
           expression_attribute_values: {
             ':w' => @worker_id,
             ':lid' => lock_id,
