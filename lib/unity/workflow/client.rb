@@ -4,9 +4,12 @@ module Unity
   module Workflow
     class Client
       LOCK_UPDATE_EXPRESSION = 'SET w = :w, lid = :lid, e = :e'
+      LOCK_KEY_FORMAT = '%s/l/%s'
+      VALUE_KEY_FORMAT = '%s/v/%s'
 
       # @param aws_dynamodb_client [Aws::DynamoDB::Client]
-      def initialize(table_name, **kwargs)
+      def initialize(namespace, table_name, **kwargs)
+        @namespace = namespace
         @table_name = table_name
         @worker_id = kwargs[:worker_id] || SecureRandom.uuid
         @aws_dynamodb_client = kwargs[:aws_dynamodb_client] || Aws::DynamoDB::Client.new
@@ -18,7 +21,7 @@ module Unity
         @aws_dynamodb_client.put_item(
           table_name: @table_name,
           item: {
-            'k' => "v,#{key}",
+            'k' => format(VALUE_KEY_FORMAT, @namespace, key),
             'v' => value,
             'e' => Process.clock_gettime(Process::CLOCK_REALTIME, :second) + (ttl || @lock_default_ttl)
           }
@@ -31,7 +34,7 @@ module Unity
         get_item_parameters = {
           table_name: @table_name,
           projection_expression: 'v, e',
-          key: { 'k' => "v,#{key}" },
+          key: { 'k' => format(VALUE_KEY_FORMAT, @namespace, key) },
           consistent_read: @consistent_reads
         }
         result = @aws_dynamodb_client.get_item(get_item_parameters)
@@ -86,7 +89,7 @@ module Unity
 
         @aws_dynamodb_client.update_item(
           table_name: @table_name,
-          key: { 'k' => "l,#{key}" },
+          key: { 'k' => format(LOCK_KEY_FORMAT, @namespace, lock_resource.key) },
           expression_attribute_values: {
             ':w' => @worker_id,
             ':lid' => lock_id,
@@ -105,7 +108,7 @@ module Unity
       def extend_lock(lock_resource)
         @aws_dynamodb_client.update_item(
           table_name: @table_name,
-          key: { 'k' => "l,#{lock_resource.key}" },
+          key: { 'k' => format(LOCK_KEY_FORMAT, @namespace, lock_resource.key) },
           expression_attribute_values: {
             ':w' => @worker_id,
             ':lid' => lock_resource.id,
@@ -121,7 +124,7 @@ module Unity
       def release(lock_resource)
         @aws_dynamodb_client.delete_item(
           table_name: @table_name,
-          key: { 'k' => "l,#{lock_resource.key}" },
+          key: { 'k' => format(LOCK_KEY_FORMAT, @namespace, lock_resource.key) },
           condition_expression: 'lid = :lid',
           expression_attribute_values: { ':lid' => lock_resource.id }
         )
